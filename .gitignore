@@ -5,6 +5,7 @@
 log/*
 chromedriver.log
 npm-debug.log
+log.json
 
 # generated stuff
 node_modules

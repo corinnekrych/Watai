@@ -6,8 +6,6 @@ try {
 	growl = false;
 }
 	
-var logger = require('winston').loggers.get('suites');
-
 
 /**@class Manages a set of features and the driver in which they are run.
 *
@@ -31,6 +29,12 @@ var Runner = new Class({
 	*/
 	features: [],
 	
+	/** Winston logger to use to log features acceptation or rejection, and potential errors.
+	*@type	winston.Logger
+	*@private
+	*/
+	logger: null,
+	
 	/** Index of the currently evaluated feature.
 	*@type	{integer}
 	*@private
@@ -40,11 +44,14 @@ var Runner = new Class({
 	/** A runner is set up by passing it a configuration object.
 	*
 	*@param	{Object}	config	A configuration object, as defined above.
+	*@param	{winston.Logger=}	[logger=default Winston logger]	The logger to use to send feature evaluation results. If not provided, will use the default Winston logger.
 	*
 	*@see	WebDriver.Builder#withCapabilities
+	*@see	https://github.com/flatiron/winston#using-the-default-logger
 	*/
-	initialize: function init(config) {
+	initialize: function init(config, logger) {
 		this.config = config;
+		this.logger = logger || require('winston');
 		
 		this.driver = new webdriver.Builder()
 						.usingServer('http://127.0.0.1:4444/wd/hub')	//TODO: extract connect URL and put it in config
@@ -81,10 +88,15 @@ var Runner = new Class({
 	run: function run() {
 		this.failed = false;
 		this.currentFeature = 0;
-
-		var runner = this;
+		
+		var runner = this;		
 		this.driver.get(this.config.baseURL).then(function() {
 			runner.evaluateFeature(runner.features[0]);
+		}, function() {	//TODO: this function is never called?!
+			runner.logger.error('The Selenium server could not be reached!');
+			runner.logger.debug('Did you start it up?');
+			runner.logger.debug('See the troubleshooting guide if you need help  ;)');
+			runner.finish(false);
 		});
 		
 		return this;
@@ -99,26 +111,25 @@ var Runner = new Class({
 			feature.test().then(this.handleFeatureResult.bind(this, feature, true),
 								this.handleFeatureResult.bind(this, feature)); // leave last arg to pass failure description
 		} catch (error) {
-			if (growl)
-				growl('Error!\n' + error, { priority: 4 });
-			driver.quit();
-			throw error;
+			this.logger.error(error);
+			this.finish(false);	//TODO: make it possible to continue even if an error is encountered?
 		}
 	},
 	
 	/** Callback handler upon feature evaluation.
 	* Displays result, errors if there were any, and calls the `postFeature` handler.
 	*
+	*@param	{Feature}	feature	The feature for which the result is to be presented.
+	*@param	{Error|boolean}	message	Either a failure description message or `true` if the feature was a success.
 	*@private
-	*
 	*@see	#postFeature
 	*/
 	handleFeatureResult: function handleFeatureResult(feature, message) {
 		if (message === true) {
-			logger.info('✔	' + feature.description);
+			this.logger.info('✔	' + feature.description);
 		} else {
-			logger.warn('✘	' + feature.description);
-			logger.debug('	' + message);
+			this.logger.warn('✘	' + feature.description);
+			this.logger.debug('	' + message);
 			this.failed = true;
 		}
 		
@@ -135,7 +146,7 @@ var Runner = new Class({
 		if (this.currentFeature < this.features.length)
 			this.evaluateFeature(this.features[this.currentFeature]);
 		else
-			this.finish();
+			this.finish(! this.failed);
 	},
 	
 	/** Informs the user of the end result and cleans up everything after tests runs.
@@ -144,14 +155,15 @@ var Runner = new Class({
 	*@private
 	*/	
 	finish: function finish(success) {
-		if (growl) {
-			if (this.failed)
-				growl('Test failed  :(', { priority: 4 });
-			else
-				growl('Test succeeded!  :)', { priority: 3 });
-		}
+		var message = 'Test ' + (success ? 'succeeded  :)' : 'failed  :('),
+			loggingMethod = (success ? 'info' : 'warn');
+			
+		this.logger[loggingMethod](message);
+		if (growl)
+			growl(message);
 		
-		this.driver.quit();
+		if (this.driver)
+			this.driver.quit();
 	}
 });
 

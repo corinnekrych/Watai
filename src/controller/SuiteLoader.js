@@ -2,8 +2,9 @@ var fs = require('fs'),
 	pathsUtils = require('path'),
 	vm = require('vm');
 	
-var logger = require('winston').loggers.get('steps'),
-	suitesLogger = require('winston').loggers.get('suites');
+var winston = require('winston');
+	
+var suitesLogger = winston.loggers.get('suites');
 
 var Widget = require('../model/Widget'),
 	Feature = require('../model/Feature'),
@@ -67,6 +68,12 @@ var SuiteLoader = new Class({
 	*/
 	runner: null,
 	
+	/** Winston logger for the loaded suite.
+	*@type	winston.Logger
+	*@private
+	*/
+	logger: null,
+	
 	/** Sandbox for features, widgets and data load.
 	* Will always offer the `driver` magical variable to give access to the WebDriver instance in user code.
 	*
@@ -89,27 +96,48 @@ var SuiteLoader = new Class({
 	*/
 	initialize: function init(path) {
 		this.path = pathsUtils.resolve(path) + '/';
-		
 		this.name = pathsUtils.basename(path);
 		
 		var config;
 		try {
 			config = require(this.path + this.paths.config);
 		} catch (error) {
-			logger.error('No loadable configuration file (' + this.paths.config + ') in "' + this.path + '"!', {path: this.path });
+			suitesLogger.error('No loadable configuration file (' + this.paths.config + ') in "' + this.path + '"!', {path: this.path });
 			throw error;
 		}
 		
-		this.runner = new Runner(config);
+		this.logger = this.initLogger(config);
+		this.runner = new Runner(config, this.logger);
 		this.context = vm.createContext(this.buildContext());
 		
 		fs.readdir(this.path, this.loadAllFiles.bind(this));
 	},
 	
+	/** Creates a new Winston logger for the given test suite.
+	*
+	*@param	{Hash}	config	The configuration for this test suite.
+	*@returns	{winston.Logger}	The logger to use for this test suite.
+	*@see	https://github.com/flatiron/winston#instantiating-your-own-logger
+	*@private
+	*/
+	initLogger: function initLogger(config) {
+		return new winston.Logger({	//TODO: use config
+			transports: [
+				new winston.transports.Console({
+					level: process.env.npm_config_coverage	// if we're computing test coverage, we can't use standard output at all, since the coverage analysis result is piped through it. The trigger is an env variable. See build automation script.
+						   ? 'error'
+						   : 'info',
+					colorize: 'true'
+				}),
+				new winston.transports.File({ filename: this.path + 'log.json' })
+			]
+		});
+	},
+	
 	/** Generates the list of variables that will be offered globally to Widgets, Features and Data elements.
 	*
-	*@see	http://nodejs.org/api/vm.html#vm_vm_runincontext_code_context_filename
 	*@returns	{Hash}	The context description, i.e. a list of elements to offer globally in the suite loading context.
+	*@see	http://nodejs.org/api/vm.html#vm_vm_runincontext_code_context_filename
 	*@private
 	*/
 	buildContext: function buildContext() {
@@ -124,7 +152,7 @@ var SuiteLoader = new Class({
 		result[this.contextGlobals.featuresList] = this.features;	// hook to pass instanciated features to this context
 		result[this.contextGlobals.widgetsList] = {};	// stays in the managed context, but necessary for features to have a reference to all widgets, since they are evaluated in _this_ context, not their instanciation one…
 			
-		result[this.contextGlobals.logger] = logger.info; // this has to be passed, for simpler access, but mostly because the `console` module is not automatically loaded
+		result[this.contextGlobals.logger] = this.logger.info; // this has to be passed, for simpler access, but mostly because the `console` module is not automatically loaded
 		
 		return result;
 	},
@@ -166,7 +194,7 @@ var SuiteLoader = new Class({
 	*@see	#loadAllFiles
 	*/
 	loadData: function loadData(dataFile) {
-		logger.info('~ loading ' + dataFile);
+		this.logger.debug('~ loading ' + dataFile);
 		
 		try {
 			vm.runInContext(fs.readFileSync(dataFile),
@@ -188,7 +216,7 @@ var SuiteLoader = new Class({
 	*@see	#loadAllFiles
 	*/
 	loadWidget: function loadWidget(widgetFile) {
-		logger.info('- loading ' + widgetFile);
+		this.logger.debug('- loading ' + widgetFile);
 		
 		var widgetName = pathsUtils.basename(widgetFile, '.js');
 		
@@ -216,7 +244,7 @@ var SuiteLoader = new Class({
 	*@see	#loadAllFiles
 	*/
 	loadFeature: function loadFeature(featureFile) {
-		logger.info('+ loading ' + featureFile);
+		this.logger.debug('+ loading ' + featureFile);
 		
 		try {
 			vm.runInContext('var featureContents = ' + fs.readFileSync(featureFile) + ';'
